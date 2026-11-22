@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Instalador de control.purelinguistics.com en un droplet Ubuntu 24.04 limpio.
 # Uso (como root, en la consola web del droplet):
-#   curl -fsSL https://raw.githubusercontent.com/<usuario>/control-app/main/install.sh | DATA_REPO=git@github.com:<usuario>/control-contexto.git bash
+#   curl -fsSL https://raw.githubusercontent.com/kylestark-alt/control-app/main/install.sh | DATA_REPO=git@github.com:kylestark-alt/control-contexto.git bash
 # Se puede correr varias veces: retoma donde se quedó.
 set -euo pipefail
 
 DOMAIN="${DOMAIN:-control.purelinguistics.com}"
-APP_REPO="${APP_REPO:-https://github.com/kylestark/control-app.git}"
-DATA_REPO="${DATA_REPO:?Falta DATA_REPO, ej. git@github.com:usuario/control-contexto.git}"
+APP_REPO="${APP_REPO:-https://github.com/kylestark-alt/control-app.git}"
+DATA_REPO="${DATA_REPO:-git@github.com:kylestark-alt/control-contexto.git}"
 APP_DIR=/opt/control/app
 DATA_DIR=/var/lib/control/data
 ENV_FILE=/etc/control.env
