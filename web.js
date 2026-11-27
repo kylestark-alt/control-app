@@ -47,7 +47,7 @@ section{padding:22px 28px;overflow:auto;position:relative}
 .filtros{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}.filtros select{width:auto;min-width:170px;margin:0}
 @media(max-width:760px){main{grid-template-columns:1fr;height:auto;min-height:calc(100vh - 90px)}aside{border-right:0;border-bottom:1px solid var(--line);max-height:36vh}section{padding:16px;min-height:75vh}.tl li{grid-template-columns:1fr}.bar{width:auto;right:12px}}
 </style></head><body>
-<header><h1>Control</h1><nav id="nav"></nav></header>
+<header><h1>Control</h1><nav id="nav"></nav><span id="yo" style="margin-left:auto;font-size:13px;color:var(--mut)"></span></header>
 <main id="main"><aside id="side"></aside><section id="view"></section></main>
 <script nonce="${nonce}">
 const D=${json};
@@ -59,6 +59,7 @@ let S={vista:'proyecto',id:ids[0]||null,sec:'contexto',q:'',estado:'',fp:'',fa:'
 const VISTAS=[['proyecto','Proyectos'],['grafo','Grafo'],['novedades','Novedades'],['principal','Contexto principal'],['conectar','Conectar IA']];
 function go(p){Object.assign(S,p);render();}
 function render(){
+  $('#yo').innerHTML=esc(D.usuario?.email||'')+' · <a href="/logout" style="color:var(--acc)">Salir</a>';
   $('#nav').innerHTML=VISTAS.map(([k,l])=>'<button data-v="'+k+'" class="'+(S.vista===k?'on':'')+'">'+l+'</button>').join('');
   $('#main').className=S.vista==='proyecto'?'':'full';
   if(S.vista!=='grafo')G.stop();
@@ -96,12 +97,13 @@ function vistaNovedades(v){
 function vistaConectar(v){
   const C=D.conexion,row=(l,val)=>'<div class="mut" style="font-size:13px">'+l+'</div><div class="copy"><code>'+esc(val)+'</code><button data-copy="'+esc(val)+'">Copiar</button></div>';
   v.innerHTML='<div class="wrap"><h2 style="margin-top:0">Conectar una IA</h2><p class="mut">Estos enlaces dan acceso. No los compartas fuera del equipo.</p>'+
-  '<div class="card"><h3>Claude (web, app, Claude Code)</h3>'+row('Configuración → Conectores → Agregar conector personalizado → URL:',C.mcp)+row('Claude Code (terminal):','claude mcp add --transport http control '+C.mcp)+'</div>'+
-  '<div class="card"><h3>ChatGPT</h3><p class="mut">Configuración → Apps/Conectores → Modo desarrollador → Crear. Autenticación: ninguna.</p>'+row('URL del servidor MCP:',C.mcp)+'</div>'+
-  '<div class="card"><h3>Cursor, Windsurf, VS Code y otros clientes MCP</h3>'+row('Agregar a mcp.json:',JSON.stringify({mcpServers:{control:{url:C.mcp}}}))+'</div>'+
+  '<div class="card"><h3>Claude (web, app, Claude Code)</h3><p class="mut">Configuración → Conectores → Agregar conector personalizado. Al conectar te pedirá entrar con Google.</p>'+row('URL:',C.mcpOauth)+row('Claude Code (terminal):','claude mcp add --transport http control '+C.mcpOauth)+'</div>'+
+  '<div class="card"><h3>ChatGPT</h3><p class="mut">Configuración → Apps/Conectores → Modo desarrollador → Crear. Autenticación: OAuth (entrar con Google).</p>'+row('URL del servidor MCP:',C.mcpOauth)+'</div>'+
+  '<div class="card"><h3>Respaldo sin Google</h3><p class="mut">Para clientes que no soportan OAuth. Este enlace da acceso completo: no lo compartas.</p>'+row('URL con token:',C.mcp)+'</div>'+
+  '<div class="card"><h3>Cursor, Windsurf, VS Code y otros clientes MCP</h3>'+row('Agregar a mcp.json:',JSON.stringify({mcpServers:{control:{url:C.mcpOauth}}}))+'</div>'+
   '<div class="card"><h3>Perplexity, Gemini y otras IAs sin MCP (solo lectura)</h3><p class="mut">Pega el enlace y pide que lo lea. Para un proyecto: /&lt;id&gt;; para un tema: /&lt;id&gt;/&lt;Tema&gt;.</p>'+row('Enlace de lectura:',C.lectura)+'</div>'+
   '<div class="card"><h3>Automatizaciones (API REST)</h3>'+row('Base:',C.api)+row('Encabezado:','Authorization: Bearer '+C.apiToken)+row('Registrar un evento:','curl -X POST '+C.api+'/proyectos/ID/registro -H "Authorization: Bearer '+C.apiToken+'" -H "Content-Type: application/json" -d \\'{"evento":"Correo enviado a X","autor":"outreach"}\\'')+'</div>'+
-  '<div class="card"><h3>Instrucción sugerida para cualquier IA</h3>'+row('Pégala en las instrucciones personalizadas:','Usa el conector "control" como memoria de proyectos. Al iniciar llama ctx_inicio con lector="<ia>-<persona>"; lee solo el índice y el tema necesario; guarda lo relevante con ctx_escribir en su tema; si surge un proyecto nuevo, propónlo.')+'</div></div>';
+  '<div class="card"><h3>Instrucción sugerida para cualquier IA</h3>'+row('Pégala en las instrucciones personalizadas:','Usa el conector "control" como memoria de proyectos. Al iniciar llama ctx_inicio una vez; lee solo el índice y el tema necesario; guarda lo relevante con ctx_escribir en su tema; si surge un proyecto nuevo, propónlo.')+'</div></div>';
 }
 
 // ---------------------------------------------------------------- Grafo (simulación de fuerzas en canvas)
