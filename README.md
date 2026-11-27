@@ -10,3 +10,9 @@ Los datos viven en un repo privado aparte (`control-contexto`); este repo solo t
 - `install.sh` — instalador del droplet (Node, Caddy con HTTPS, systemd, llave de despliegue).
 
 En el droplet: `control llaves`, `control actualizar`, `control rotar <TOKEN>`, `control logs`.
+
+## Funciones tipo Obsidian
+- Enlaces `[[proyecto]]`, `[[proyecto#Tema/Subtema]]` → grafo, «Mencionado en» y menciones sin enlazar.
+- Etiquetas `#palabra` transversales (nodos verdes en el grafo).
+- Pendientes con propiedades: `- [ ] texto @responsable vence:AAAA-MM-DD #etiqueta`; consulta global con `ctx_consultar`.
+- Bitácora diaria, historial por tema (git), buscador rápido ⌘K, grafo local por proyecto y línea de tiempo animada.

@@ -73,7 +73,7 @@ function buildMcp(ident = {}) {
     lector: lectorZ.optional(), desde: z.string().optional(),
   }, a => store.novedades({ ...a, lector: a.lector || ident.email || 'anonimo' }));
 
-  tool('ctx_escribir', 'Escribe en un tema o subtema del contexto ("Tema" o "Tema/Subtema"); lo crea si no existe. modo=agregar (default) o reemplazar (pasa la version leída). Queda registrado.', {
+  tool('ctx_escribir', 'Escribe en un tema o subtema del contexto ("Tema" o "Tema/Subtema"); lo crea si no existe. Usa [[proyecto#Tema]] para enlazar y #etiqueta. modo=agregar (default) o reemplazar (pasa la version leída). Queda registrado.', {
     id: z.string(), tema: z.string(), contenido: z.string(),
     modo: z.enum(['agregar', 'reemplazar']).default('agregar'), version: z.string().optional(),
     nota: z.string().max(160).optional().describe('Resumen del cambio en una línea'), autor: autorZ,
@@ -97,6 +97,27 @@ function buildMcp(ident = {}) {
   tool('ctx_registrar', 'Agrega un evento de una línea al changelog (avances, envíos, cierre de sesión).', {
     id: z.string(), evento: z.string().max(300), tema: z.string().optional(), autor: autorZ,
   }, a => store.registrar(conAutor(a)));
+
+
+  tool('ctx_pendiente', 'Agrega, completa o reabre un pendiente. Al agregar: responsable (@), vence (AAAA-MM-DD) y etiquetas opcionales. Para completar/reabrir, texto = parte del pendiente.', {
+    id: z.string(), accion: z.enum(['agregar', 'completar', 'reabrir']), texto: z.string(),
+    responsable: z.string().optional(), vence: z.string().optional(), etiquetas: z.array(z.string()).default([]), autor: autorZ,
+  }, a => store.pendiente(conAutor(a)));
+
+  tool('ctx_consultar', 'Consultas transversales sin leer proyectos: pendientes (filtros: proyecto, responsable, estado, vencidos, etiqueta), etiquetas, bitacora (dias o dia), historial de un tema (id + tema; sha para ver esa versión), enlaces (quién enlaza a id/tema y menciones sin enlazar).', {
+    tipo: z.enum(['pendientes', 'etiquetas', 'bitacora', 'historial', 'enlaces']),
+    id: z.string().optional(), tema: z.string().optional(), sha: z.string().optional(),
+    responsable: z.string().optional(), estado: z.enum(['abiertos', 'cerrados', 'todos']).optional(), vencidos: z.boolean().optional(), etiqueta: z.string().optional(),
+    dias: z.number().int().min(1).max(60).optional(), dia: z.string().optional(),
+  }, async a => {
+    if (a.tipo === 'pendientes') return (await store.listaPendientes({ proyecto: a.id, responsable: a.responsable, estado: a.estado, vencidos: a.vencidos, etiqueta: a.etiqueta }))
+      .map(p => `${p.hecho ? '[x]' : '[ ]'} ${p.proyecto}: ${p.texto}${p.responsable ? ' @' + p.responsable : ''}${p.vence ? ' vence ' + p.vence : ''}${p.tags.length ? ' #' + p.tags.join(' #') : ''}`).join('\n') || 'Sin pendientes con esos filtros.';
+    if (a.tipo === 'etiquetas') return (await store.etiquetas()).map(e => `#${e.tag} (${e.total}): ${e.donde.slice(0, 6).join(' | ')}`).join('\n') || 'Sin etiquetas todavía.';
+    if (a.tipo === 'bitacora') return store.bitacora({ dias: a.dias, dia: a.dia });
+    if (a.tipo === 'historial') { if (!a.id || !a.tema) throw new Error('historial requiere id y tema'); return store.historialTema(a.id, a.tema, { sha: a.sha }); }
+    if (!a.id) throw new Error('enlaces requiere id');
+    return { mencionado_en: await store.enlacesA(a.id, a.tema), sin_enlazar: a.tema ? [] : await store.sinEnlazar(a.id) };
+  });
 
   tool('ctx_principal', 'Lee o reemplaza el contexto principal (CONTEXTO.md). Para reemplazar pasa la version obtenida con modo=leer.', {
     modo: z.enum(['leer', 'reemplazar']), contenido: z.string().optional(), version: z.string().optional(),
@@ -143,6 +164,10 @@ api.patch('/proyectos/:id', h(r => store.meta({ ...r.body, id: r.params.id, auto
 api.post('/proyectos/:id/registro', h(r => store.registrar({ id: r.params.id, evento: r.body.evento, tema: r.body.tema, autor: autor(r) })));
 api.get('/novedades', h(r => store.novedades({ lector: r.query.lector || 'api', desde: r.query.desde })));
 api.get('/grafo', h(() => store.grafo()));
+api.post('/proyectos/:id/pendientes', h(r => store.pendiente({ ...r.body, id: r.params.id, autor: autor(r) })));
+api.get('/pendientes', h(r => store.listaPendientes({ proyecto: r.query.proyecto, responsable: r.query.responsable, estado: r.query.estado, vencidos: r.query.vencidos === '1', etiqueta: r.query.etiqueta })));
+api.get('/etiquetas', h(() => store.etiquetas()));
+api.get('/bitacora', h(r => store.bitacora({ dias: Number(r.query.dias) || 7, dia: r.query.dia })));
 api.get('/buscar', h(r => store.buscar(r.query.q, { proyecto: r.query.proyecto })));
 api.get('/historial', h(r => store.historial({ proyecto: r.query.proyecto, limite: Number(r.query.limite) || 30 })));
 app.use('/api', api);
@@ -174,26 +199,42 @@ app.use((req, res, next) => {
   }
   res.redirect(302, '/login');
 });
+app.get('/web/historial', async (req, res) => {
+  try { res.json(await store.historialTema(String(req.query.id), String(req.query.tema), { sha: req.query.sha ? String(req.query.sha) : undefined })); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 app.get('/', async (req, res, next) => {
   try {
     const idx = await store.index();
     const proyectos = {};
     for (const [id, m] of Object.entries(idx.proyectos)) {
       const ctx = await fs.readFile(path.join(CFG.dataDir, 'proyectos', id, 'contexto.md'), 'utf8').catch(() => '');
-      const secciones = { contexto: marked.parse(conAnclas(ctx)) };
-      for (const s of ['pendientes', 'decisiones', 'changelog']) secciones[s] = marked.parse((await store.proyecto(id, { seccion: s })).texto);
-      proyectos[id] = { ...m, temas: undefined, indice: outline(ctx), secciones };
+      const secciones = { contexto: marked.parse(enlacesWeb(conAnclas(ctx), idx)) };
+      for (const s of ['pendientes', 'decisiones', 'changelog']) secciones[s] = marked.parse(enlacesWeb((await store.proyecto(id, { seccion: s })).texto, idx));
+      const mencionado = await store.enlacesA(id); const sinEnlazar = await store.sinEnlazar(id);
+      proyectos[id] = { ...m, temas: undefined, indice: outline(ctx), secciones, mencionado, sinEnlazar };
     }
     const nonce = crypto.randomBytes(16).toString('base64');
-    res.set('Content-Security-Policy', `default-src 'none'; script-src 'nonce-${nonce}' https://framework.interfaz.digital; style-src 'unsafe-inline' https://framework.interfaz.digital; font-src https://framework.interfaz.digital data:; img-src 'self' data: https:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`);
+    res.set('Content-Security-Policy', `default-src 'none'; script-src 'nonce-${nonce}' https://framework.interfaz.digital; style-src 'unsafe-inline' https://framework.interfaz.digital; font-src https://framework.interfaz.digital data:; img-src 'self' data: https:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`);
     res.set('Cache-Control', 'no-store');
     res.type('html').send(renderBiblioteca({
       principal: marked.parse((await store.inicio()).principal), proyectos,
-      eventos: (await store.eventos({ max: 400 })).reverse(), grafo: await store.grafo(),
+      eventos: (await store.eventos({ max: 600 })).reverse(), grafo: await store.grafo(), buscable: await store.buscable(),
+      pendientes: await store.listaPendientes({ estado: 'todos' }), etiquetas: await store.etiquetas(),
       usuario: req.usuario, conexion: { url: CFG.publicUrl, mcpOauth: `${CFG.publicUrl}/mcp`, mcp: `${CFG.publicUrl}/mcp/${CFG.mcpToken}`, lectura: `${CFG.publicUrl}/t/${CFG.readToken}`, api: `${CFG.publicUrl}/api`, apiToken: CFG.apiToken },
     }, nonce));
   } catch (e) { next(e); }
 });
+
+// [[proyecto#Tema]] → enlace navegable dentro de la biblioteca.
+function enlacesWeb(md, idx) {
+  return md.replace(/\[\[([a-z0-9][a-z0-9-]{1,40})(?:\s*(?:#|›)\s*([^\]|]+?))?(?:\|([^\]]*))?\]\]/g, (all, p, ruta, alias) => {
+    const ex = idx.proyectos[p];
+    const label = (alias || ((ex ? ex.nombre : p) + (ruta ? ' › ' + ruta.trim() : ''))).replace(/[<>&"]/g, '');
+    return `<a class="c-wl${ex ? '' : ' roto'}" data-p="${p}"${ruta ? ` data-t="${ruta.trim().replace(/"/g, '')}"` : ''}>${label}</a>`;
+  });
+}
 
 // Encabezados ##/### con id estable para que el índice y el grafo salten al tema.
 function conAnclas(md) {

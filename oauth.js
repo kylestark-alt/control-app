@@ -76,7 +76,7 @@ export function createAuth({ publicUrl, authUrl, allowed, admins, estadoDir, leg
   router.use(express.urlencoded({ extended: false, limit: '20kb' }));
 
   // ---- Metadatos (RFC 9728 / RFC 8414)
-  const prm = (req, res) => res.json({ resource: `${publicUrl}/mcp`, authorization_servers: [publicUrl], scopes_supported: ['control'], bearer_methods_supported: ['header'], resource_name: 'Control · memoria de proyectos' });
+  const prm = (req, res) => res.json({ resource: `${publicUrl}/mcp`, authorization_servers: [publicUrl], scopes_supported: ['control'], bearer_methods_supported: ['header'], resource_name: 'Pure · control' });
   router.get('/.well-known/oauth-protected-resource', prm);
   router.get('/.well-known/oauth-protected-resource/mcp', prm);
   router.get('/.well-known/oauth-authorization-server', (req, res) => res.json({
@@ -187,7 +187,7 @@ export function createAuth({ publicUrl, authUrl, allowed, admins, estadoDir, leg
   // ---- Biblioteca web
   router.get('/login', (req, res) => {
     if (req.query.ir === 'google') return toAuth(res, 'pl-control-web', '/auth/callback', { web: true });
-    page(res, 200, 'Control', '<p>Memoria de proyectos de Pure Linguistics.</p><a class="b p" href="/login?ir=google">Entrar con Google</a><p><small><a href="/respaldo">Acceso de respaldo con contraseña</a></small></p>');
+    page(res, 200, 'Control', '<p><b>pure.</b> control · memoria de proyectos.</p><a class="b p" href="/login?ir=google">Entrar con Google</a><p><small><a href="/respaldo">Acceso de respaldo con contraseña</a></small></p>');
   });
   router.get('/auth/callback', async (req, res) => {
     const r = await fromAuth(req, '/auth/callback');
