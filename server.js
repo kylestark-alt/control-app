@@ -9,7 +9,9 @@ import { z } from 'zod';
 import { marked } from 'marked';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { Store, SECCIONES } from './store.js';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { Store, SECCIONES, PROTOCOLO, outline } from './store.js';
 import { renderBiblioteca } from './web.js';
 
 const env = process.env;
@@ -31,58 +33,64 @@ await store.init();
 // ---------------------------------------------------------------- MCP
 
 const txt = o => ({ content: [{ type: 'text', text: typeof o === 'string' ? o : JSON.stringify(o, null, 1) }] });
-const autorZ = z.string().min(2).max(40).describe('Quién escribe: claude, chatgpt, perplexity, omar, kyle…');
+const autorZ = z.string().min(2).max(60).describe('Quién escribe: claude, chatgpt, perplexity, omar, kyle…');
+const lectorZ = z.string().min(2).max(60).describe('Identificador estable de esta IA/usuario, ej. "claude-omar". Guarda tu marcador de novedades.');
 
 function buildMcp() {
-  const s = new McpServer({ name: 'control-contexto', version: '1.0.0' }, {
-    instructions: 'Memoria compartida de proyectos. Llama ctx_inicio UNA vez al empezar; luego lee solo el proyecto/sección necesario. Escribe resúmenes, registra cambios con tu nombre como autor y compacta si recibes avisos.',
-  });
+  const s = new McpServer({ name: 'control-contexto', version: '2.0.0' }, { instructions: PROTOCOLO });
   const tool = (name, description, inputSchema, fn) =>
     s.registerTool(name, { description, inputSchema }, async args => {
       try { return txt(await fn(args)); } catch (e) { return { ...txt(`ERROR: ${e.message}`), isError: true }; }
     });
 
-  tool('ctx_inicio', 'Contexto principal + lista de proyectos en una línea cada uno. Llamar una vez por sesión.', {},
-    async () => {
-      const r = await store.inicio();
-      return `${r.principal}\n## Proyectos\n${r.proyectos}${r.avisos.length ? `\n\nAVISOS: ${r.avisos.join(' ')}` : ''}`;
-    });
+  tool('ctx_inicio', 'Llamar UNA vez al iniciar: contexto principal (incluye el protocolo), proyectos en una línea y novedades desde tu última visita.', {
+    lector: lectorZ.optional(),
+  }, async a => {
+    const r = await store.inicio({ lector: a.lector });
+    let out = `${r.principal}\n## Proyectos\n${r.proyectos}`;
+    if (r.novedades) out += `\n\n## Novedades${r.novedades.desde ? ` desde ${r.novedades.desde.slice(0, 16)}` : ''}\n${r.novedades.texto}`;
+    if (r.avisos.length) out += `\n\nAVISOS: ${r.avisos.join(' ')}`;
+    return out;
+  });
 
-  tool('ctx_proyecto', 'Lee UNA sección de un proyecto. Devuelve version (para editar sin conflictos) y relacionados en una línea.', {
-    id: z.string(), seccion: z.enum(SECCIONES).default('contexto'),
-    ultimas: z.number().int().min(1).max(100).optional().describe('Solo changelog: últimas N líneas'),
-  }, a => store.proyecto(a.id, a.seccion, { ultimas: a.ultimas }));
+  tool('ctx_proyecto', 'Sin tema: ficha, índice de temas/subtemas (tamaño y última edición), relacionados y 5 cambios recientes. Con tema ("Tema" o "Tema/Subtema"): solo ese bloque y su version. seccion: pendientes | decisiones | changelog.', {
+    id: z.string(), tema: z.string().optional(), seccion: z.enum(SECCIONES).optional(),
+  }, a => store.proyecto(a.id, a));
 
-  tool('ctx_buscar', 'Busca texto en todos los proyectos (o en uno). Devuelve fragmentos cortos.', {
+  tool('ctx_buscar', 'Busca texto; cada resultado indica proyecto › tema/subtema para abrir solo eso.', {
     q: z.string().min(2), proyecto: z.string().optional(),
   }, a => store.buscar(a.q, { proyecto: a.proyecto }));
 
-  tool('ctx_historial', 'Últimos cambios (commits) globales o de un proyecto.', {
-    proyecto: z.string().optional(), limite: z.number().int().min(1).max(100).default(20),
-  }, a => store.historial(a));
+  tool('ctx_novedades', 'Qué cambió desde tu última consulta (o desde una fecha ISO). Agrupado por proyecto y tema.', {
+    lector: lectorZ, desde: z.string().optional(),
+  }, a => store.novedades(a));
 
-  tool('ctx_crear_proyecto', 'Crea un proyecto. resumen = una línea. relacionados = ids existentes.', {
+  tool('ctx_escribir', 'Escribe en un tema o subtema del contexto ("Tema" o "Tema/Subtema"); lo crea si no existe. modo=agregar (default) o reemplazar (pasa la version leída). Queda registrado.', {
+    id: z.string(), tema: z.string(), contenido: z.string(),
+    modo: z.enum(['agregar', 'reemplazar']).default('agregar'), version: z.string().optional(),
+    nota: z.string().max(160).optional().describe('Resumen del cambio en una línea'), autor: autorZ,
+  }, a => store.escribirTema(a));
+
+  tool('ctx_crear_proyecto', 'Crea un proyecto. resumen = una línea. relacionados = ids existentes. deriva_de = id del proyecto del que nace (ramificación). temas = títulos iniciales.', {
     id: z.string().describe('minúsculas-con-guiones'), nombre: z.string(), resumen: z.string().max(200),
-    relacionados: z.array(z.string()).default([]), autor: autorZ,
+    relacionados: z.array(z.string()).default([]), deriva_de: z.string().optional(), temas: z.array(z.string()).default([]), autor: autorZ,
   }, a => store.crearProyecto(a));
 
-  tool('ctx_actualizar', 'Edita contexto, pendientes o decisiones. Con modo=reemplazar pasa la version que leíste. Registra el cambio automáticamente.', {
-    id: z.string(), seccion: z.enum(['contexto', 'pendientes', 'decisiones']),
-    contenido: z.string(), modo: z.enum(['reemplazar', 'agregar']).default('agregar'),
-    version: z.string().optional(), nota: z.string().max(160).optional().describe('Resumen del cambio para el changelog'),
-    autor: autorZ,
+  tool('ctx_actualizar', 'Edita pendientes o decisiones (o el contexto completo solo para reorganizarlo). modo=agregar o reemplazar con version.', {
+    id: z.string(), seccion: z.enum(['pendientes', 'decisiones', 'contexto']), contenido: z.string(),
+    modo: z.enum(['agregar', 'reemplazar']).default('agregar'), version: z.string().optional(), nota: z.string().max(160).optional(), autor: autorZ,
   }, a => store.actualizar(a));
 
-  tool('ctx_ficha', 'Cambia nombre, resumen, estado (activo/pausado/cerrado) o relaciones de un proyecto.', {
+  tool('ctx_ficha', 'Cambia nombre, resumen, estado, relaciones o deriva_de ("" para quitarlo) de un proyecto.', {
     id: z.string(), nombre: z.string().optional(), resumen: z.string().max(200).optional(),
-    estado: z.enum(['activo', 'pausado', 'cerrado']).optional(), relacionados: z.array(z.string()).optional(), autor: autorZ,
+    estado: z.enum(['activo', 'pausado', 'cerrado']).optional(), relacionados: z.array(z.string()).optional(), deriva_de: z.string().optional(), autor: autorZ,
   }, a => store.meta(a));
 
-  tool('ctx_registrar', 'Agrega una línea al changelog de un proyecto (eventos, avances, envíos).', {
-    id: z.string(), evento: z.string().max(300), autor: autorZ,
+  tool('ctx_registrar', 'Agrega un evento de una línea al changelog (avances, envíos, cierre de sesión).', {
+    id: z.string(), evento: z.string().max(300), tema: z.string().optional(), autor: autorZ,
   }, a => store.registrar(a));
 
-  tool('ctx_principal', 'Reemplaza el contexto principal (CONTEXTO.md). Pasa la version; obténla con modo=leer.', {
+  tool('ctx_principal', 'Lee o reemplaza el contexto principal (CONTEXTO.md). Para reemplazar pasa la version obtenida con modo=leer.', {
     modo: z.enum(['leer', 'reemplazar']), contenido: z.string().optional(), version: z.string().optional(),
     nota: z.string().max(160).optional(), autor: autorZ.optional(),
   }, async a => {
@@ -116,26 +124,31 @@ const api = express.Router();
 api.use((req, res, next) => safeEq((req.get('authorization') || '').replace(/^Bearer /, ''), CFG.apiToken) ? next() : res.status(401).json({ error: 'token inválido' }));
 const h = fn => (req, res) => Promise.resolve(fn(req)).then(r => res.json(r), e => res.status(/CONFLICTO/.test(e.message) ? 409 : 400).json({ error: e.message }));
 const autor = req => req.body?.autor || req.get('x-autor') || 'api';
-api.get('/inicio', h(() => store.inicio()));
+api.get('/inicio', h(r => store.inicio({ lector: r.query.lector })));
 api.get('/proyectos', h(async () => (await store.index()).proyectos));
-api.get('/proyectos/:id', h(r => store.proyecto(r.params.id, r.query.seccion || 'contexto', { ultimas: Number(r.query.ultimas) || undefined })));
+api.get('/proyectos/:id', h(r => store.proyecto(r.params.id, { tema: r.query.tema, seccion: r.query.seccion })));
+api.put('/proyectos/:id/temas', h(r => store.escribirTema({ ...r.body, id: r.params.id, autor: autor(r) })));
 api.post('/proyectos', h(r => store.crearProyecto({ ...r.body, autor: autor(r) })));
 api.put('/proyectos/:id/:seccion', h(r => store.actualizar({ ...r.body, id: r.params.id, seccion: r.params.seccion, autor: autor(r) })));
 api.patch('/proyectos/:id', h(r => store.meta({ ...r.body, id: r.params.id, autor: autor(r) })));
-api.post('/proyectos/:id/registro', h(r => store.registrar({ id: r.params.id, evento: r.body.evento, autor: autor(r) })));
+api.post('/proyectos/:id/registro', h(r => store.registrar({ id: r.params.id, evento: r.body.evento, tema: r.body.tema, autor: autor(r) })));
+api.get('/novedades', h(r => store.novedades({ lector: r.query.lector || 'api', desde: r.query.desde })));
+api.get('/grafo', h(() => store.grafo()));
 api.get('/buscar', h(r => store.buscar(r.query.q, { proyecto: r.query.proyecto })));
 api.get('/historial', h(r => store.historial({ proyecto: r.query.proyecto, limite: Number(r.query.limite) || 30 })));
 app.use('/api', api);
 
 // ---------------------------------------------------------------- Texto plano (solo lectura)
 
-app.get('/t/:token{/:id}{/:seccion}', async (req, res) => {
+app.get('/t/:token{/:id}{/*seccion}', async (req, res) => {
   if (!safeEq(req.params.token, CFG.readToken)) return res.status(404).end();
   res.type('text/plain; charset=utf-8');
   try {
     if (!req.params.id) { const r = await store.inicio(); return res.send(`${r.principal}\n## Proyectos\n${r.proyectos}\n\nPara un proyecto: ${CFG.publicUrl}/t/<token>/<id>/<seccion>\n`); }
-    const p = await store.proyecto(req.params.id, req.params.seccion || 'contexto', { ultimas: 30 });
-    res.send(`${p.texto}\n\n---\nRelacionados:\n${p.relacionados.map(x => '- ' + x).join('\n') || '(ninguno)'}\n`);
+    const sec = [].concat(req.params.seccion || []).join('/');
+    const p = await store.proyecto(req.params.id, SECCIONES.includes(sec) ? { seccion: sec } : sec ? { tema: decodeURIComponent(sec) } : {});
+    const cuerpo = p.texto ?? `${p.intro}\n\nTemas (abre uno con /<id>/<Tema>):\n${p.indice}\n\nRecientes:\n${p.recientes.join('\n')}`;
+    res.send(`${cuerpo}\n\n---\nRelacionados:\n${p.relacionados.map(x => '- ' + x).join('\n') || '(ninguno)'}\n`);
   } catch (e) { res.status(400).send(e.message); }
 });
 
@@ -153,23 +166,35 @@ app.use((req, res, next) => {
 app.get('/', async (req, res, next) => {
   try {
     const idx = await store.index();
-    const principal = (await store.inicio()).principal;
     const proyectos = {};
     for (const [id, m] of Object.entries(idx.proyectos)) {
-      proyectos[id] = { ...m, secciones: {} };
-      for (const s of SECCIONES) proyectos[id].secciones[s] = marked.parse((await store.proyecto(id, s)).texto);
+      const ctx = await fs.readFile(path.join(CFG.dataDir, 'proyectos', id, 'contexto.md'), 'utf8').catch(() => '');
+      const secciones = { contexto: marked.parse(conAnclas(ctx)) };
+      for (const s of ['pendientes', 'decisiones', 'changelog']) secciones[s] = marked.parse((await store.proyecto(id, { seccion: s })).texto);
+      proyectos[id] = { ...m, temas: undefined, indice: outline(ctx), secciones };
     }
-    const historial = await store.historial({ limite: 200 });
-    // CSP con nonce: el Markdown escrito por IAs no puede ejecutar scripts ni handlers inline.
     const nonce = crypto.randomBytes(16).toString('base64');
     res.set('Content-Security-Policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src 'self' data: https:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`);
     res.set('Cache-Control', 'no-store');
     res.type('html').send(renderBiblioteca({
-      principal: marked.parse(principal), proyectos, historial,
+      principal: marked.parse((await store.inicio()).principal), proyectos,
+      eventos: (await store.eventos({ max: 400 })).reverse(), grafo: await store.grafo(),
       conexion: { url: CFG.publicUrl, mcp: `${CFG.publicUrl}/mcp/${CFG.mcpToken}`, lectura: `${CFG.publicUrl}/t/${CFG.readToken}`, api: `${CFG.publicUrl}/api`, apiToken: CFG.apiToken },
     }, nonce));
   } catch (e) { next(e); }
 });
+
+// Encabezados ##/### con id estable para que el índice y el grafo salten al tema.
+function conAnclas(md) {
+  let tema = '', fence = false;
+  return md.split('\n').map(l => {
+    if (/^\s*```/.test(l)) fence = !fence;
+    const m = !fence && l.match(/^(#{2,3})\s+(.+?)\s*$/);
+    if (!m) return l;
+    const ruta = m[1].length === 2 ? (tema = m[2]) : `${tema}/${m[2]}`;
+    return `<h${m[1].length} id="t-${encodeURIComponent(ruta.toLowerCase())}">${m[2].replace(/[<>&]/g, '')}</h${m[1].length}>`;
+  }).join('\n');
+}
 
 app.use((err, req, res, next) => { console.error(err); res.status(500).json({ error: 'interno' }); });
 setInterval(() => store.sync().catch(e => console.error('sync:', e.message)), 10 * 60 * 1000);
