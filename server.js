@@ -185,7 +185,7 @@ app.get('/', async (req, res, next) => {
       proyectos[id] = { ...m, temas: undefined, indice: outline(ctx), secciones };
     }
     const nonce = crypto.randomBytes(16).toString('base64');
-    res.set('Content-Security-Policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src 'self' data: https:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`);
+    res.set('Content-Security-Policy', `default-src 'none'; script-src 'nonce-${nonce}' https://framework.interfaz.digital; style-src 'unsafe-inline' https://framework.interfaz.digital; font-src https://framework.interfaz.digital data:; img-src 'self' data: https:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`);
     res.set('Cache-Control', 'no-store');
     res.type('html').send(renderBiblioteca({
       principal: marked.parse((await store.inicio()).principal), proyectos,
